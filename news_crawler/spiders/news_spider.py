@@ -1,8 +1,9 @@
 import scrapy
 import re
-from twisted.internet.error import ConnectionLost
-from scrapy.spidermiddlewares.httperror import HttpError
-from ..items import NewsCrawlerItem
+from pymongo.mongo_client import MongoClient
+from pymongo.server_api import ServerApi
+
+uri = "mongodb+srv://huytrue02:huytrue2002@cluster0.bxyokxl.mongodb.net/?retryWrites=true&w=majority"
 class NewsSpider(scrapy.Spider):
     name = "news"
     
@@ -14,29 +15,48 @@ class NewsSpider(scrapy.Spider):
     
     allowed_domains = ['www.bbc.com']
     start_urls = [
-        "https://www.bbc.com/sport/football/67470815",
+        "https://www.bbc.com/sport/football",
     ]
+    
+    def __init__(self, *args, **kwargs):
+        super(NewsSpider, self).__init__(*args, **kwargs)
+        
+        # Kết nối tới MongoDB
+        self.client = MongoClient(uri, server_api=ServerApi('1'))
+        self.db = self.client['news-data']
+        self.collection = self.db['news']
 
 
     def parse(self, response):
-        if isinstance(response.error, ConnectionLost):
-            # Thử lại kết nối
-            yield response.request.replace(dont_filter=True)
-        
         news_links = response.css('a[href*="/sport/football/"]::attr(href)').getall()
-    
+
         # Theo dõi các đường dẫn tin tức bóng đá
         for link in news_links:
             match = re.search(r'/(\d+)$', link)
+            # Lưu thông tin các trang chi tiết
             if match:
-                yield response.follow(link, callback=self.parse_football)
-    
-    def parse_football(sefl, response):
-        content = response.xpath("//p//span/text()").getall()
+                yield response.follow(link, callback = self.parse_football)
+            else:
+                yield response.follow(link, callback = self.parse)
+                
+    def parse_football (self, response):
+        if self.collection.count_documents({'url': response.url}) > 0:
+            return
+        content = response.xpath("//p//span/text()").getall()[5:]
         content = " ".join(content)
-        item = NewsCrawlerItem()
-        item["title"] = response.xpath("//h1/text()").get()
-        item["time"] = response.xpath("//time//span/text()").get()
-        item["content"] = content
-        item["url"] = response.url
-        yield item
+        news_data = {
+            "title":response.xpath("//h1/text()").get(),
+            "content": content,
+            "url": response.url
+        }
+        
+        self.collection.insert_one(news_data)
+        yield {
+            "title":response.xpath("//h1/text()").get(),
+            "content": content,
+            "url": response.url
+        }
+        
+    def closed(self, reason):
+        # Đóng kết nối với MongoDB
+        self.client.close()
